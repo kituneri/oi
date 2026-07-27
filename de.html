@@ -1,0 +1,510 @@
+// ドキュメント保存 (続き)
+            const doc = {
+                id: currentDocId,
+                title: getDocTitle(),
+                content: content,
+                settings: {
+                    bgImage,
+                    bgColor,
+                    blur,
+                    overlayColor,
+                    overlayOpacity
+                },
+                updatedAt: new Date().toISOString()
+            };
+
+            await new Promise((resolve, reject) => {
+                const req = store.put(doc);
+                req.onsuccess = resolve;
+                req.onerror = () => reject(req.error);
+            });
+
+            loadDocumentList();
+            showNotification('保存しました');
+        };
+
+        const getDocTitle = () => {
+            const editor = document.getElementById('editor');
+            const text = editor.innerText.trim();
+            if (!text) return '無題のドキュメント';
+            const firstLine = text.split('\n')[0];
+            return firstLine.substring(0, 20) + (firstLine.length > 20 ? '...' : '');
+        };
+
+        // ドキュメント読み込み
+        const loadDocument = async (id) => {
+            currentDocId = id;
+            const transaction = db.transaction(['documents'], 'readonly');
+            const store = transaction.objectStore('documents');
+            
+            const doc = await new Promise((resolve, reject) => {
+                const req = store.get(id);
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+
+            if (!doc) return;
+
+            document.getElementById('editor').innerHTML = doc.content || '';
+            
+            const settings = doc.settings || {};
+            document.getElementById('bgColorControl').value = settings.bgColor || '#ffffff';
+            document.getElementById('blurSlider').value = settings.blur || 0;
+            document.getElementById('blurValue').textContent = settings.blur || 0;
+            document.getElementById('overlayColorPicker').value = settings.overlayColor || '#000000';
+            document.getElementById('overlayOpacitySlider').value = settings.overlayOpacity || 0;
+            document.getElementById('overlayOpacityValue').textContent = (settings.overlayOpacity || 0) + '%';
+            
+            applyCanvasSettings(settings);
+            loadDocumentList();
+        };
+
+        // 新規ドキュメント作成
+        const createNewDocument = async () => {
+            const newId = 'doc_' + Date.now();
+            currentDocId = newId;
+            document.getElementById('editor').innerHTML = '';
+            
+            // 設定リセット
+            document.getElementById('bgColorControl').value = '#ffffff';
+            document.getElementById('blurSlider').value = 0;
+            document.getElementById('blurValue').textContent = '0';
+            document.getElementById('overlayColorPicker').value = '#000000';
+            document.getElementById('overlayOpacitySlider').value = 0;
+            document.getElementById('overlayOpacityValue').textContent = '0%';
+            
+            applyCanvasSettings({
+                bgColor: '#ffffff',
+                blur: 0,
+                overlayColor: '#000000',
+                overlayOpacity: 0
+            });
+
+            await saveDocument();
+        };
+
+        // ドキュメント削除
+        const deleteDocument = async (id, e) => {
+            e.stopPropagation();
+            if (!confirm('このドキュメントを削除してもよろしいですか？')) return;
+
+            const transaction = db.transaction(['documents'], 'readwrite');
+            const store = transaction.objectStore('documents');
+            
+            await new Promise((resolve, reject) => {
+                const req = store.delete(id);
+                req.onsuccess = resolve;
+                req.onerror = () => reject(req.error);
+            });
+
+            if (currentDocId === id) {
+                const allDocs = await getAllDocuments();
+                if (allDocs.length > 0) {
+                    loadDocument(allDocs[0].id);
+                } else {
+                    createNewDocument();
+                }
+            } else {
+                loadDocumentList();
+            }
+        };
+
+        const getAllDocuments = () => {
+            return new Promise((resolve, reject) => {
+                const transaction = db.transaction(['documents'], 'readonly');
+                const store = transaction.objectStore('documents');
+                const req = store.getAll();
+                req.onsuccess = () => resolve(req.result || []);
+                req.onerror = () => reject(req.error);
+            });
+        };
+
+        // ドキュメント一覧表示
+        const loadDocumentList = async () => {
+            const docs = await getAllDocuments();
+            docs.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
+
+            const listEl = document.getElementById('documentList');
+            listEl.innerHTML = '';
+
+            docs.forEach(doc => {
+                const item = document.createElement('div');
+                item.className = `file-item ${doc.id === currentDocId ? 'active' : ''}`;
+                item.onclick = () => loadDocument(doc.id);
+
+                const title = document.createElement('span');
+                title.textContent = doc.title || '無題のドキュメント';
+                title.style.overflow = 'hidden';
+                title.style.textOverflow = 'ellipsis';
+                title.style.whiteSpace = 'nowrap';
+
+                const actions = document.createElement('div');
+                actions.className = 'item-actions';
+
+                const delBtn = document.createElement('button');
+                delBtn.textContent = '🗑️';
+                delBtn.onclick = (e) => deleteDocument(doc.id, e);
+
+                actions.appendChild(delBtn);
+                item.appendChild(title);
+                item.appendChild(actions);
+                listEl.appendChild(item);
+            });
+        };
+
+        // キャンバス設定の適用
+        const applyCanvasSettings = (settings) => {
+            const bgEl = document.getElementById('canvasBackground');
+            const overlayEl = document.getElementById('canvasOverlay');
+
+            if (settings.bgImage) {
+                bgEl.style.backgroundImage = settings.bgImage;
+            } else {
+                bgEl.style.backgroundImage = 'none';
+                bgEl.style.backgroundColor = settings.bgColor || '#ffffff';
+            }
+
+            bgEl.style.filter = `blur(${settings.blur || 0}px)`;
+
+            const opacity = (settings.overlayOpacity || 0) / 100;
+            const hex = settings.overlayColor || '#000000';
+            const r = parseInt(hex.slice(1, 3), 16) || 0;
+            const g = parseInt(hex.slice(3, 5), 16) || 0;
+            const b = parseInt(hex.slice(5, 7), 16) || 0;
+            
+            overlayEl.style.backgroundColor = `rgba(${r}, ${g}, ${b}, ${opacity})`;
+        };
+
+        // エディタ操作コマンド執行
+        const execCmd = (command, value = null) => {
+            document.execCommand(command, false, value);
+            document.getElementById('editor').focus();
+        };
+
+        // イベントリスナーの初期化
+        const initEventListeners = () => {
+            // 保存・モーダル系ボタン
+            document.getElementById('saveBtn').onclick = saveDocument;
+            document.getElementById('newDocBtn').onclick = createNewDocument;
+            document.getElementById('exportBtn').onclick = () => document.getElementById('exportModal').classList.add('active');
+            document.getElementById('settingsBtn').onclick = () => document.getElementById('settingsModal').classList.add('active');
+
+            // ツールバー操作
+            document.getElementById('boldBtn').onclick = () => execCmd('bold');
+            document.getElementById('italicBtn').onclick = () => execCmd('italic');
+            document.getElementById('underlineBtn').onclick = () => execCmd('underline');
+            document.getElementById('strikeBtn').onclick = () => execCmd('strikeThrough');
+
+            document.getElementById('leftAlignBtn').onclick = () => execCmd('justifyLeft');
+            document.getElementById('centerAlignBtn').onclick = () => execCmd('justifyCenter');
+            document.getElementById('rightAlignBtn').onclick = () => execCmd('justifyRight');
+            document.getElementById('justifyBtn').onclick = () => execCmd('justifyFull');
+
+            document.getElementById('ulBtn').onclick = () => execCmd('insertUnorderedList');
+            document.getElementById('olBtn').onclick = () => execCmd('insertOrderedList');
+
+            document.getElementById('formatSelect').onchange = (e) => execCmd('formatBlock', e.target.value);
+            document.getElementById('fontSelect').onchange = (e) => execCmd('fontName', e.target.value);
+            
+            document.getElementById('fontSizeSelect').onchange = (e) => {
+                const val = e.target.value;
+                document.getElementById('fontSizeCustom').value = parseInt(val);
+                applyFontSize(val);
+            };
+
+            document.getElementById('fontSizeApplyBtn').onclick = () => {
+                const px = document.getElementById('fontSizeCustom').value;
+                applyFontSize(px + 'px');
+            };
+
+            document.getElementById('textColorPicker').oninput = (e) => execCmd('foreColor', e.target.value);
+            document.getElementById('bgColorPicker').oninput = (e) => execCmd('hiliteColor', e.target.value);
+
+            // 画像挿入
+            document.getElementById('imageBtn').onclick = () => document.getElementById('imageUploadModal').classList.add('active');
+
+            // ページデザイン設定連動
+            document.getElementById('bgColorControl').oninput = (e) => {
+                document.getElementById('canvasBackground').style.backgroundImage = 'none';
+                document.getElementById('canvasBackground').style.backgroundColor = e.target.value;
+            };
+
+            document.getElementById('bgImageUpload').onchange = (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onload = (event) => {
+                        const url = `url("${event.target.result}")`;
+                        document.getElementById('canvasBackground').style.backgroundImage = url;
+                    };
+                    reader.readAsDataURL(file);
+                }
+            };
+
+            document.getElementById('removeBgImageBtn').onclick = () => {
+                document.getElementById('canvasBackground').style.backgroundImage = 'none';
+                document.getElementById('bgImageUpload').value = '';
+            };
+
+            document.getElementById('blurSlider').oninput = (e) => {
+                const val = e.target.value;
+                document.getElementById('blurValue').textContent = val;
+                document.getElementById('canvasBackground').style.filter = `blur(${val}px)`;
+            };
+
+            document.getElementById('overlayColorPicker').oninput = updateOverlay;
+            document.getElementById('overlayOpacitySlider').oninput = (e) => {
+                document.getElementById('overlayOpacityValue').textContent = e.target.value + '%';
+                updateOverlay();
+            };
+
+            // プリセットクリック
+            document.querySelectorAll('.preset-item').forEach(item => {
+                item.onclick = () => {
+                    document.querySelectorAll('.preset-item').forEach(i => i.classList.remove('active'));
+                    item.classList.add('active');
+                    const preset = item.dataset.preset;
+                    applyPreset(preset);
+                };
+            });
+
+            // タブ切り替え
+            document.querySelectorAll('.panel-tab').forEach(tab => {
+                tab.onclick = () => {
+                    document.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('active'));
+                    tab.classList.add('active');
+                    
+                    const target = tab.dataset.tab;
+                    if (target === 'page') {
+                        document.getElementById('pagePanel').classList.remove('panel-hidden');
+                        document.getElementById('imagePanel').classList.add('panel-hidden');
+                    } else {
+                        document.getElementById('pagePanel').classList.add('panel-hidden');
+                        document.getElementById('imagePanel').classList.remove('panel-hidden');
+                    }
+                };
+            });
+
+            // ツールバー位置設定
+            document.getElementById('toolbarPositionSelect').onchange = (e) => {
+                const pos = e.target.value;
+                const topTb = document.getElementById('toolbar');
+                const bottomTb = document.getElementById('toolbarBottom');
+                
+                topTb.className = `editor-toolbar ${pos}`;
+                if (pos === 'bottom') {
+                    bottomTb.style.display = 'flex';
+                    bottomTb.innerHTML = topTb.innerHTML;
+                    topTb.style.display = 'none';
+                } else {
+                    topTb.style.display = 'flex';
+                    bottomTb.style.display = 'none';
+                }
+            };
+
+            // エディタ内のクリック処理（画像選択用）
+            document.getElementById('editor').onclick = (e) => {
+                if (e.target.tagName === 'IMG') {
+                    selectImage(e.target);
+                } else {
+                    deselectImage();
+                }
+            };
+        };
+
+        const applyFontSize = (size) => {
+            const selection = window.getSelection();
+            if (!selection.rangeCount || selection.isCollapsed) return;
+            const span = document.createElement('span');
+            span.style.fontSize = size;
+            const range = selection.getRangeAt(0);
+            range.surroundContents(span);
+        };
+
+        const updateOverlay = () => {
+            const hex = document.getElementById('overlayColorPicker').value;
+            const opacity = document.getElementById('overlayOpacitySlider').value / 100;
+            const r = parseInt(hex.slice(1, 3), 16) || 0;
+            const g = parseInt(hex.slice(3, 5), 16) || 0;
+            const b = parseInt(hex.slice(5, 7), 16) || 0;
+            document.getElementById('canvasOverlay').style.backgroundColor = `rgba(${r}, ${g}, ${b}, ${opacity})`;
+        };
+
+        const applyPreset = (preset) => {
+            const bgEl = document.getElementById('canvasBackground');
+            bgEl.style.backgroundImage = 'none';
+            switch (preset) {
+                case 'default': bgEl.style.backgroundColor = '#ffffff'; break;
+                case 'light-gray': bgEl.style.backgroundColor = '#f5f5f5'; break;
+                case 'light-blue': bgEl.style.background = 'linear-gradient(135deg, #e0f2fe 0%, #f0f9ff 100%)'; break;
+                case 'light-green': bgEl.style.background = 'linear-gradient(135deg, #dcfce7 0%, #f0fdf4 100%)'; break;
+                case 'light-purple': bgEl.style.background = 'linear-gradient(135deg, #f3e8ff 0%, #faf5ff 100%)'; break;
+                case 'light-yellow': bgEl.style.background = 'linear-gradient(135deg, #fef3c7 0%, #fffbeb 100%)'; break;
+            }
+        };
+
+        // 画像挿入処理
+        const insertImage = () => {
+            const fileInput = document.getElementById('imageFileInput');
+            const file = fileInput.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const imgHtml = `<div class="editor-image" contenteditable="false"><img src="${e.target.result}" style="width: 100%;" /></div><p><br></p>`;
+                    execCmd('insertHTML', imgHtml);
+                    closeImageUploadModal();
+                    fileInput.value = '';
+                };
+                reader.readAsDataURL(file);
+            }
+        };
+
+        const selectImage = (imgEl) => {
+            if (selectedImage) selectedImage.classList.remove('selected');
+            selectedImage = imgEl.parentElement.classList.contains('editor-image') ? imgEl.parentElement : imgEl;
+            selectedImage.classList.add('selected');
+
+            // 画像プロパティパネル表示
+            const propPanel = document.getElementById('imagePropertiesPanel');
+            const currentWidth = imgEl.style.width || '100%';
+            
+            propPanel.innerHTML = `
+                <div class="control-group">
+                    <label class="control-label">幅 (%)</label>
+                    <input type="range" class="slider" id="imgWidthSlider" min="10" max="100" value="${parseInt(currentWidth)}">
+                </div>
+                <div class="control-group">
+                    <label class="control-label">角丸 (px)</label>
+                    <input type="range" class="slider" id="imgRadiusSlider" min="0" max="50" value="${parseInt(imgEl.style.borderRadius || 0)}">
+                </div>
+                <button class="toolbar-btn" id="deleteImgBtn" style="width:100%; color: var(--danger);">画像を削除</button>
+            `;
+
+            document.getElementById('imgWidthSlider').oninput = (e) => {
+                imgEl.style.width = e.target.value + '%';
+            };
+            document.getElementById('imgRadiusSlider').oninput = (e) => {
+                imgEl.style.borderRadius = e.target.value + 'px';
+            };
+            document.getElementById('deleteImgBtn').onclick = () => {
+                selectedImage.remove();
+                deselectImage();
+            };
+
+            // 画像タブへ自動切り替え
+            document.querySelectorAll('.panel-tab')[1].click();
+        };
+
+        const deselectImage = () => {
+            if (selectedImage) {
+                selectedImage.classList.remove('selected');
+                selectedImage = null;
+            }
+            document.getElementById('imagePropertiesPanel').innerHTML = `
+                <p style="color: var(--text-secondary); font-size: 13px; text-align: center;">画像をクリックして選択してください</p>
+            `;
+        };
+
+        // モーダル閉じる関数
+        const closeExportModal = () => document.getElementById('exportModal').classList.remove('active');
+        const closeSettingsModal = () => document.getElementById('settingsModal').classList.remove('active');
+        const closeImageUploadModal = () => document.getElementById('imageUploadModal').classList.remove('active');
+
+        // エクスポート処理
+        const downloadFile = (content, filename, contentType) => {
+            const a = document.createElement('a');
+            const file = new Blob([content], { type: contentType });
+            a.href = URL.createObjectURL(file);
+            a.download = filename;
+            a.click();
+            URL.revokeObjectURL(a.href);
+        };
+
+        const exportAsHTML = () => {
+            const html = document.getElementById('canvasContent').outerHTML;
+            downloadFile(html, `${getDocTitle()}.html`, 'text/html');
+            closeExportModal();
+        };
+
+        const exportAsJSON = async () => {
+            const docs = await getAllDocuments();
+            const currentDoc = docs.find(d => d.id === currentDocId);
+            downloadFile(JSON.stringify(currentDoc, null, 2), `${getDocTitle()}.json`, 'application/json');
+            closeExportModal();
+        };
+
+        const exportAsMarkdown = () => {
+            const text = document.getElementById('editor').innerText;
+            downloadFile(text, `${getDocTitle()}.md`, 'text/markdown');
+            closeExportModal();
+        };
+
+        const exportAsImage = () => {
+            const canvasEl = document.getElementById('canvasContent');
+            html2canvas(canvasEl).then(canvas => {
+                const link = document.createElement('a');
+                link.download = `${getDocTitle()}.png`;
+                link.href = canvas.toDataURL();
+                link.click();
+                closeExportModal();
+            });
+        };
+
+        const exportAsPDF = () => {
+            const canvasEl = document.getElementById('canvasContent');
+            html2canvas(canvasEl).then(canvas => {
+                const imgData = canvas.toDataURL('image/png');
+                const { jsPDF } = window.jspdf;
+                const pdf = new jsPDF('p', 'mm', 'a4');
+                const imgProps = pdf.getImageProperties(imgData);
+                const pdfWidth = pdf.internal.pageSize.getWidth();
+                const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
+                
+                pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+                pdf.save(`${getDocTitle()}.pdf`);
+                closeExportModal();
+            });
+        };
+
+        // 通知トースト
+        const showNotification = (msg) => {
+            const toast = document.createElement('div');
+            toast.textContent = msg;
+            toast.style.cssText = `
+                position: fixed;
+                bottom: 20px;
+                right: 20px;
+                background: var(--secondary);
+                color: white;
+                padding: 10px 18px;
+                border-radius: 6px;
+                font-size: 13px;
+                z-index: 3000;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+                transition: opacity 0.3s ease;
+            `;
+            document.body.appendChild(toast);
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                setTimeout(() => toast.remove(), 300);
+            }, 2000);
+        };
+
+        // アプリ起動
+        window.addEventListener('DOMContentLoaded', async () => {
+            try {
+                await initDB();
+                initEventListeners();
+                const docs = await getAllDocuments();
+                if (docs.length > 0) {
+                    await loadDocument(docs[0].id);
+                } else {
+                    await createNewDocument();
+                }
+            } catch (err) {
+                console.error('初期化エラー:', err);
+            }
+        });
+    </script>
+</body>
+</html>
